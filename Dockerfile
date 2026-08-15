@@ -4,21 +4,14 @@ FROM public.ecr.aws/docker/library/golang:1.26.5-alpine AS build
 # go.mod pins the toolchain. The golang base sets GOTOOLCHAIN=local, which turns
 # a `go` directive newer than the image into a hard failure rather than a fetch.
 ENV GOTOOLCHAIN=auto
-RUN apk add --no-cache git
 WORKDIR /src
 
-# hanzoai/authz is private, so it is fetched over authenticated git rather than
-# the public proxy. gh_token is the shared build secret; absent it, this is a
-# no-op and the build works for anything already public.
-ENV GOPRIVATE=github.com/hanzoai/* \
-    GONOSUMDB=github.com/hanzoai/*
+# Both dependencies — hanzoai/authz and hanzoai/go-openai-realtime — are public
+# and served by the module proxy, so this needs no credential and no git. A
+# private-module dance here would be apparatus for a problem this tree does not
+# have, and one more thing to fail in a build that cannot explain itself.
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod \
-    --mount=type=secret,id=gh_token \
-    if [ -s /run/secrets/gh_token ]; then \
-      git config --global url."https://x-access-token:$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/"; \
-    fi && \
-    go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
