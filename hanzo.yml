@@ -1,8 +1,10 @@
 # hanzoai/voice — a spoken conversation over one socket.
 #
-# The service was complete and measured before it had any way to be built, so it
-# ran nowhere: /v1/voice answered 404 in production while the code sat finished
-# in main. This file is the missing half.
+# A library, not a service. `cmd/voice` runs it alone for development; in
+# production hanzoai/ai imports this and mounts /v1/voice, because that is where
+# the AI surface already lives and one API host is the whole point of api.hanzo.ai.
+# An image here would be a second thing to build, deploy, route and operate for
+# one package.
 #
 # `go test ./...` is the real gate here, unlike the sibling services whose suites
 # need a database. Nothing in this tree opens one — the seams (Turn, Mind, Meter)
@@ -15,9 +17,3 @@ test:
       go build ./...
       go vet ./...
       go test ./...
-
-images:
-  - name: voice
-    context: .
-    dockerfile: Dockerfile
-    repo: ghcr.io/hanzoai/voice
