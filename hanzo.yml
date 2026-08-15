@@ -1,0 +1,23 @@
+# hanzoai/voice — a spoken conversation over one socket.
+#
+# The service was complete and measured before it had any way to be built, so it
+# ran nowhere: /v1/voice answered 404 in production while the code sat finished
+# in main. This file is the missing half.
+#
+# `go test ./...` is the real gate here, unlike the sibling services whose suites
+# need a database. Nothing in this tree opens one — the seams (Turn, Mind, Meter)
+# are interfaces, and talk_test.go drives them with stand-ins, so the suite is
+# hermetic and fast and belongs on every push.
+test:
+  - name: build-vet-test
+    run: |
+      set -e
+      go build ./...
+      go vet ./...
+      go test ./...
+
+images:
+  - name: voice
+    context: .
+    dockerfile: Dockerfile
+    repo: ghcr.io/hanzoai/voice
