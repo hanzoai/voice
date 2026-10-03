@@ -33,6 +33,11 @@ Emitted: `session.created`, `input_audio_buffer.speech_started`/`.speech_stopped
 `response.created`, `response.audio_transcript.delta`, `response.audio.delta`
 (base64 PCM16 @ 24 kHz), `response.done`, `error`.
 
+A reply works on a context a barge-in cancels and writes the socket on the session's,
+which nothing cancels: coder/websocket closes the connection when a write's context is
+done, so a write on the cancelled one ended the conversation, not the turn. A reply
+clears the floor on its way out only while the floor is still its own (`finish`).
+
 ## The three seams
 
 `Turn` — audio in, floor out (`Quiet`/`Held`/`Yielded`). `Hush` ships with it and

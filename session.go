@@ -19,9 +19,9 @@ import (
 type Floor int
 
 const (
-	Quiet  Floor = iota // nobody is speaking
-	Held                // the speaker has the floor and is still using it
-	Yielded             // the speaker just finished; a reply is due now
+	Quiet   Floor = iota // nobody is speaking
+	Held                 // the speaker has the floor and is still using it
+	Yielded              // the speaker just finished; a reply is due now
 )
 
 // Turn decides when a speaker has finished.
@@ -78,6 +78,7 @@ type Session struct {
 	// while audio is still queued.
 	mu     sync.Mutex
 	stop   context.CancelFunc
+	turn   int64        // which reply stop belongs to
 	item   atomic.Int64 // conversation item counter, for truncate
 	spoken atomic.Int64 // ms of audio sent for the item in flight
 	heard  atomic.Int64 // ms of audio taken in
@@ -212,6 +213,11 @@ func (s *Session) hush() {
 }
 
 // reply composes an answer and speaks it, a sentence at a time.
+//
+// The WORK runs on ctx, which a barge-in cancels; the SOCKET is written on parent,
+// which nothing cancels. coder/websocket closes the whole connection when a write's
+// context is done, so a reply that wrote on its own cancelled context after being
+// spoken over ended the conversation instead of the turn.
 func (s *Session) reply(parent context.Context) {
 	ctx, stop := context.WithCancel(parent)
 	s.mu.Lock()
@@ -221,24 +227,28 @@ func (s *Session) reply(parent context.Context) {
 		return
 	}
 	s.stop = stop
+	s.turn++
+	turn := s.turn
 	s.mu.Unlock()
-	defer s.hush()
+	defer s.finish(turn, stop)
 
 	item := fmt.Sprintf("%s-%d", s.ID, s.item.Add(1))
 	s.spoken.Store(0)
 
 	words, err := s.Mind.Reply(ctx)
 	if err != nil {
-		s.fail(ctx, err.Error())
+		if ctx.Err() == nil { // a turn that was spoken over is not an error
+			s.fail(parent, err.Error())
+		}
 		return
 	}
-	_ = s.send(ctx, rt.ServerEventBase{Type: rt.ServerEventTypeResponseCreated, EventID: item})
+	_ = s.send(parent, rt.ServerEventBase{Type: rt.ServerEventTypeResponseCreated, EventID: item})
 
 	for line := range Sentences(words, 240) {
 		if ctx.Err() != nil {
 			return // interrupted: stop synthesising what will not be heard
 		}
-		_ = s.send(ctx, transcript{
+		_ = s.send(parent, transcript{
 			ServerEventBase: rt.ServerEventBase{Type: rt.ServerEventTypeResponseAudioTranscriptDelta, EventID: item},
 			ItemID:          item,
 			Delta:           line + " ",
@@ -246,7 +256,7 @@ func (s *Session) reply(parent context.Context) {
 		pcm, err := s.Speech.Say(ctx, s.Model, s.Voice, line)
 		if err != nil {
 			if ctx.Err() == nil {
-				s.fail(ctx, "speech: "+err.Error())
+				s.fail(parent, "speech: "+err.Error())
 			}
 			return
 		}
@@ -256,7 +266,7 @@ func (s *Session) reply(parent context.Context) {
 		ms := int64(len(pcm)) * 1000 / (Spoken * 2)
 		s.spoken.Add(ms)
 		s.said.Add(ms)
-		if err := s.send(ctx, audio{
+		if err := s.send(parent, audio{
 			ServerEventBase: rt.ServerEventBase{Type: rt.ServerEventTypeResponseAudioDelta, EventID: item},
 			ItemID:          item,
 			Delta:           base64.StdEncoding.EncodeToString(pcm),
@@ -264,7 +274,19 @@ func (s *Session) reply(parent context.Context) {
 			return
 		}
 	}
-	_ = s.send(ctx, rt.ServerEventBase{Type: rt.ServerEventTypeResponseDone, EventID: item})
+	_ = s.send(parent, rt.ServerEventBase{Type: rt.ServerEventTypeResponseDone, EventID: item})
+}
+
+// finish ends a reply. It clears the floor only while the floor is still this
+// reply's: one spoken over has already given it up, and the reply that took it
+// next must not be cancelled by the old one leaving.
+func (s *Session) finish(turn int64, stop context.CancelFunc) {
+	s.mu.Lock()
+	if s.turn == turn {
+		s.stop = nil
+	}
+	s.mu.Unlock()
+	stop()
 }
 
 // audio and transcript carry the two deltas the protocol defines but the
