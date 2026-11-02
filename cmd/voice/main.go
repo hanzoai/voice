@@ -26,7 +26,7 @@ func main() {
 		stt     = flag.String("stt", env("VOICE_STT", "whisper"), "transcriber")
 		tts     = flag.String("tts", env("VOICE_TTS", "kokoro"), "synthesiser")
 		who     = flag.String("voice", env("VOICE_VOICE", "af_heart"), "synthesised voice")
-		prompt  = flag.String("prompt", env("VOICE_PROMPT", "You are a voice assistant. Answer in one or two short sentences. Never use lists or markdown: everything you write will be spoken aloud."), "system prompt")
+		prompt  = flag.String("prompt", env("VOICE_PROMPT", voice.Prompt), "system prompt")
 		origins = flag.String("origins", env("VOICE_ORIGINS", ""), "comma separated origins allowed to open a socket")
 	)
 	flag.Parse()

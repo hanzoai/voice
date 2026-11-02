@@ -202,7 +202,7 @@ func TestAudioGoesBothWays(t *testing.T) {
 	defer chat.Close()
 
 	ctx := context.Background()
-	question, err := sp.Say(ctx, "kokoro", "af_heart", "When is the meeting?")
+	question, err := say(ctx, sp, "af_heart", "", "When is the meeting?")
 	if err != nil {
 		t.Fatalf("could not synthesise the question: %v", err)
 	}
@@ -383,4 +383,46 @@ func wav(pcm []byte, rate int) []byte {
 func put16(b []byte, v uint16) { b[0], b[1] = byte(v), byte(v>>8) }
 func put32(b []byte, v uint32) {
 	b[0], b[1], b[2], b[3] = byte(v), byte(v>>8), byte(v>>16), byte(v>>24)
+}
+
+// say has the speech service speak text and gathers the whole of it.
+func say(ctx context.Context, sp *Speech, voice, language, text string) ([]byte, error) {
+	var out []byte
+	err := sp.Say(ctx, "kokoro", voice, language, text, func(pcm []byte) error {
+		out = append(out, pcm...)
+		return nil
+	})
+	return out, err
+}
+
+// TestArabicGoesBothWays: an Arabic question, an Arabic answer, spoken in
+// Arabic. The speaker is identified as speaking Arabic, the reply is spoken in
+// it — by the voice the speech service keeps for languages kokoro lacks — and
+// transcribing the reply audio gives the reply back.
+func TestArabicGoesBothWays(t *testing.T) {
+	sp := speechAt(t)
+	const reply = "الاجتماع يوم الخميس الساعة الثانية."
+	chat := saysBack(reply)
+	defer chat.Close()
+
+	ctx := context.Background()
+	question, err := say(ctx, sp, "", "ar", "متى موعد الاجتماع القادم يا ترى؟")
+	if err != nil {
+		t.Fatalf("could not synthesise the question: %v", err)
+	}
+	question = downsample(question)
+	question = append(question, make([]byte, Heard*2)...)
+
+	got := converse(t, daemon(t, sp, chat.URL, reply), someone, question, 90*time.Second)
+	if len(got.pcm) == 0 || quiet(got.pcm) {
+		t.Fatalf("no Arabic came back; events seen: %v", got.events)
+	}
+	back, err := sp.Transcribe(ctx, "whisper", wav(got.pcm, Spoken))
+	if err != nil {
+		t.Fatalf("could not transcribe the reply: %v", err)
+	}
+	if overlap(reply, back) < 0.5 {
+		t.Fatalf("reply audio said %q, expected something like %q", back, reply)
+	}
+	t.Logf("ARABIC ANSWER LATENCY %v, reply %q", got.answer.Round(time.Millisecond), strings.TrimSpace(back))
 }

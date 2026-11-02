@@ -3,7 +3,6 @@ package voice
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,60 +33,54 @@ func NewSpeech(url string) *Speech {
 	return &Speech{URL: strings.TrimRight(url, "/"), HTTP: &http.Client{}}
 }
 
-// Say turns text into raw PCM16 at Spoken Hz.
+// Say speaks text and hands the audio over as it arrives: raw PCM16 at Spoken
+// Hz, in pieces that hold whole samples. The speech service streams pcm a
+// sentence at a time, so the first piece comes back while the rest of the text
+// is still being synthesised — the wait to first sound is one sentence, not the
+// reply. language is the text's ISO-639-1 code; "" lets the service read it off
+// the script, which is how Arabic finds the voice that speaks it.
 //
-// wav is asked for rather than pcm even though pcm is what is wanted. Every
-// format except wav is produced by piping the wav through an ffmpeg
-// subprocess, so asking for "pcm" spawns a process to strip a 44-byte header.
-// Asking for wav and dropping those bytes here does the same thing without the
-// process, on a path that runs once per sentence.
-func (s *Speech) Say(ctx context.Context, model, voice, text string) ([]byte, error) {
+// each is called with every piece; an error from it stops the read and is
+// returned. A piece is only valid for the duration of the call.
+func (s *Speech) Say(ctx context.Context, model, voice, language, text string, each func(pcm []byte) error) error {
 	body, _ := json.Marshal(map[string]string{
-		"model": model, "input": text, "voice": voice, "response_format": "wav",
+		"model": model, "input": text, "voice": voice, "language": language, "response_format": "pcm",
 	})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL+"/v1/audio/speech", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := s.HTTP.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return nil, fmt.Errorf("speech %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
+		return fmt.Errorf("speech %d: %s", resp.StatusCode, bytes.TrimSpace(msg))
 	}
-	wav, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	return samples(wav)
-}
-
-// samples finds the data chunk of a RIFF/WAVE file and returns it.
-//
-// The header is 44 bytes for what soundfile writes, but a fixed 44 is a
-// latent corruption the day a chunk is added ahead of `data` — walking the
-// chunks costs nothing and cannot be wrong.
-func samples(wav []byte) ([]byte, error) {
-	if len(wav) < 12 || !bytes.Equal(wav[0:4], []byte("RIFF")) || !bytes.Equal(wav[8:12], []byte("WAVE")) {
-		return nil, fmt.Errorf("not a wav (%d bytes)", len(wav))
-	}
-	for at := 12; at+8 <= len(wav); {
-		id := wav[at : at+4]
-		size := int(binary.LittleEndian.Uint32(wav[at+4 : at+8]))
-		at += 8
-		if bytes.Equal(id, []byte("data")) {
-			if at+size > len(wav) {
-				size = len(wav) - at // truncated tail: keep what arrived
+	buf := make([]byte, Spoken/5*2) // 200 ms
+	var carry []byte
+	for {
+		n, err := resp.Body.Read(buf)
+		if n > 0 {
+			piece := append(carry, buf[:n]...)
+			whole := len(piece) - len(piece)%2
+			if whole > 0 {
+				if e := each(piece[:whole]); e != nil {
+					return e
+				}
 			}
-			return wav[at : at+size], nil
+			carry = append([]byte(nil), piece[whole:]...)
 		}
-		at += size + size%2 // chunks are word aligned
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
-	return nil, fmt.Errorf("wav carried no data chunk")
 }
 
 // Ear is an open transcript on the speech service: audio goes in as it is
@@ -132,6 +125,9 @@ type Said struct {
 	Text    string  `json:"text"`
 	Pending string  `json:"pending"`
 	Seconds float64 `json:"duration"`
+	// Language is what the speaker is speaking, ISO-639-1, once the transcriber
+	// was told or has identified it; "" before. A reply is spoken in it.
+	Language string `json:"language"`
 }
 
 // All is everything heard, settled and not. A turn ends on the whole of it.

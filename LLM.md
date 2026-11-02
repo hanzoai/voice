@@ -63,9 +63,24 @@ Measured on CPU, 32 cores under load ~12, real models both ends:
   reply against 452 ms for its first sentence. After the first, synthesis runs
   while the previous clip plays and is free — kokoro runs 3.5–4.7× faster than
   speech. This is why `Sentences` exists.
-- **Ask speech for `wav`, never `pcm`.** Every format but wav is made by piping
-  the wav through an ffmpeg subprocess, so "pcm" spawns a process to strip a
-  44-byte header. `samples()` walks the RIFF chunks instead.
+- **Speech is asked for `pcm`, and read as it streams.** hanzoai/speech (Go,
+  0.1.17+) writes pcm in Go and streams it a sentence at a time, so `Say` hands
+  each piece to the socket as it arrives (`each`), whole samples only, and a
+  barge-in stops the read mid-sentence. The wav-and-strip-the-header path was
+  for the Python service, whose pcm went through ffmpeg.
+
+## Languages
+
+A reply is spoken in the language the speaker used. The transcript reports it
+(`Said.Language`: named, or identified by the speech service after 2 s of
+speech), the `Pipe` keeps it across turns, and `Say` passes it to the speech
+service, which picks the voice that speaks it — Arabic goes to Supertonic,
+since no Kokoro voice reads Arabic script. A client fixes both with
+`session.update`: `session.voice` (a kokoro or OpenAI name, or supertonic's
+`F1`–`F5`, `M1`–`M5`) and `session.input_audio_transcription.language`
+(ISO-639-1); the library's `ClientSession` predates that field, so
+`SessionUpdate` (wire.go) reads the event itself. The default prompt
+(`Prompt`) answers in the speaker's language, and in Arabic in their dialect.
 
 ## Capacity
 

@@ -59,6 +59,7 @@ type thinking struct {
 
 func (m *thinking) Hear(context.Context, []byte) {}
 func (m *thinking) See([]byte)                   {}
+func (m *thinking) Language() string             { return "" }
 func (m *thinking) Reply(ctx context.Context) (<-chan string, error) {
 	close(m.started)
 	if m.fails {

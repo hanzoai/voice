@@ -51,6 +51,9 @@ type Mind interface {
 	See(jpeg []byte)
 	// Reply closes the utterance and streams the answer as it is composed.
 	Reply(ctx context.Context) (<-chan string, error)
+	// Language is the language the speaker was heard speaking, ISO-639-1,
+	// once known; "" before. A reply is spoken in it unless the client chose.
+	Language() string
 }
 
 // Meter records what a session owes. Seconds are the billable quantity in both
@@ -71,8 +74,9 @@ type Session struct {
 	Meter  Meter
 	Log    *slog.Logger
 
-	Model string // synthesiser
-	Voice string
+	Model    string // synthesiser
+	Voice    string
+	Language string // what replies are spoken in; "" follows the speaker (Mind.Language)
 
 	// stop cancels the reply in flight. Barge-in is exactly this being called
 	// while audio is still queued.
@@ -153,7 +157,15 @@ func (s *Session) take(ctx context.Context, event rt.ClientEvent) error {
 		s.hush()
 		return nil
 
-	case *rt.SessionUpdateEvent:
+	case *SessionUpdate:
+		s.mu.Lock()
+		if v := e.Session.Voice; v != "" {
+			s.Voice = v
+		}
+		if l := e.Language(); l != "" {
+			s.Language = l
+		}
+		s.mu.Unlock()
 		return nil
 
 	default:
@@ -253,28 +265,40 @@ func (s *Session) reply(parent context.Context) {
 			ItemID:          item,
 			Delta:           line + " ",
 		})
-		pcm, err := s.Speech.Say(ctx, s.Model, s.Voice, line)
+		voice, lang := s.tongue()
+		err := s.Speech.Say(ctx, s.Model, voice, lang, line, func(pcm []byte) error {
+			if ctx.Err() != nil {
+				return ctx.Err() // spoken over: stop reading what will not be heard
+			}
+			ms := int64(len(pcm)) * 1000 / (Spoken * 2)
+			s.spoken.Add(ms)
+			s.said.Add(ms)
+			return s.send(parent, audio{
+				ServerEventBase: rt.ServerEventBase{Type: rt.ServerEventTypeResponseAudioDelta, EventID: item},
+				ItemID:          item,
+				Delta:           base64.StdEncoding.EncodeToString(pcm),
+			})
+		})
 		if err != nil {
 			if ctx.Err() == nil {
 				s.fail(parent, "speech: "+err.Error())
 			}
 			return
 		}
-		if ctx.Err() != nil {
-			return
-		}
-		ms := int64(len(pcm)) * 1000 / (Spoken * 2)
-		s.spoken.Add(ms)
-		s.said.Add(ms)
-		if err := s.send(parent, audio{
-			ServerEventBase: rt.ServerEventBase{Type: rt.ServerEventTypeResponseAudioDelta, EventID: item},
-			ItemID:          item,
-			Delta:           base64.StdEncoding.EncodeToString(pcm),
-		}); err != nil {
-			return
-		}
 	}
 	_ = s.send(parent, rt.ServerEventBase{Type: rt.ServerEventTypeResponseDone, EventID: item})
+}
+
+// tongue is the voice and language the next sentence is spoken in: the
+// client's choice when it made one, else the language the speaker was heard in.
+func (s *Session) tongue() (string, string) {
+	s.mu.Lock()
+	voice, lang := s.Voice, s.Language
+	s.mu.Unlock()
+	if lang == "" {
+		lang = s.Mind.Language()
+	}
+	return voice, lang
 }
 
 // finish ends a reply. It clears the floor only while the floor is still this

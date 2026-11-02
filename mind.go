@@ -34,6 +34,7 @@ type Pipe struct {
 
 	mu       sync.Mutex
 	ear      *Ear
+	lang     string // what the transcriber says is being spoken
 	said     strings.Builder
 	frames   [][]byte
 	turns    []line
@@ -42,6 +43,14 @@ type Pipe struct {
 }
 
 type line struct{ Role, Text string }
+
+// Prompt is what a voice conversation tells its model by default: short, spoken,
+// and in the speaker's own language — an Arabic speaker answered in the dialect
+// they used, Gulf, Egyptian, Levantine or Modern Standard, because a voice that
+// answers Egyptian in textbook Arabic sounds like a machine reading a page.
+const Prompt = "You are a voice assistant. Answer in one or two short sentences, in the language you are spoken to in, " +
+	"and in Arabic in the same dialect: Gulf, Egyptian, Levantine or Modern Standard. " +
+	"Never use lists or markdown: everything you write will be spoken aloud."
 
 // Hear takes audio and returns immediately.
 //
@@ -100,6 +109,9 @@ func (p *Pipe) carry(ctx context.Context) {
 		p.mu.Lock()
 		p.said.Reset()
 		p.said.WriteString(said.All())
+		if said.Language != "" {
+			p.lang = said.Language
+		}
 		p.mu.Unlock()
 	}
 }
@@ -132,6 +144,15 @@ func (p *Pipe) settled(ctx context.Context) {
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// Language is the language the transcriber last said the speaker was using. It
+// outlives a turn: a conversation that began in Arabic is still answered in
+// Arabic when the next utterance is too short to identify.
+func (p *Pipe) Language() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lang
 }
 
 func (p *Pipe) See(jpeg []byte) {
