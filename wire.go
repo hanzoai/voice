@@ -31,6 +31,33 @@ type FrameEvent struct {
 
 func (FrameEvent) ClientEventType() rt.ClientEventType { return Frame }
 
+// SessionUpdate is session.update as this server reads it: the two settings it
+// honours. The library's ClientSession predates the transcription `language`
+// the protocol now carries, so the event is read here rather than through it.
+//
+// voice is a voice the speech service knows (kokoro's, OpenAI's names, or
+// supertonic's F1-F5 and M1-M5). language is ISO-639-1: the language the
+// speaker will use and the reply is spoken in, Arabic included.
+type SessionUpdate struct {
+	rt.EventBase
+	Session struct {
+		Voice                   string `json:"voice,omitempty"`
+		InputAudioTranscription *struct {
+			Language string `json:"language,omitempty"`
+		} `json:"input_audio_transcription,omitempty"`
+	} `json:"session"`
+}
+
+func (SessionUpdate) ClientEventType() rt.ClientEventType { return rt.ClientEventTypeSessionUpdate }
+
+// Language is the transcription language the update names, or "".
+func (u *SessionUpdate) Language() string {
+	if t := u.Session.InputAudioTranscription; t != nil {
+		return t.Language
+	}
+	return ""
+}
+
 // Read turns one JSON message from a client into the event it names.
 //
 // The library ships UnmarshalServerEvent because a client receives server
@@ -47,7 +74,7 @@ func Read(data []byte) (rt.ClientEvent, error) {
 	var out rt.ClientEvent
 	switch head.Type {
 	case rt.ClientEventTypeSessionUpdate:
-		out = &rt.SessionUpdateEvent{}
+		out = &SessionUpdate{}
 	case rt.ClientEventTypeInputAudioBufferAppend:
 		out = &rt.InputAudioBufferAppendEvent{}
 	case rt.ClientEventTypeInputAudioBufferCommit:
