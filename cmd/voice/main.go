@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -34,7 +35,7 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 
 	v := &voice.Voice{
-		Gate:   voice.NewGate(*issuer+"/v1/iam/.well-known/jwks", []string{*issuer}, nil),
+		Gate:   voice.NewGate(*issuer+"/v1/iam/.well-known/jwks", trustedIssuers(*issuer), nil),
 		Desk:   voice.NewDesk(),
 		Room:   voice.NewFloorspace(voice.Capacity, voice.Share),
 		Speech: voice.NewSpeech(*speech),
@@ -102,4 +103,18 @@ func (l ledger) Bill(w voice.Who, heard, spoke time.Duration) {
 	l.log.Info("audio",
 		"org", w.Org, "user", w.User,
 		"heard_s", heard.Seconds(), "spoke_s", spoke.Seconds())
+}
+
+// platformIssuers are the two spellings of the platform's issuer while it moves from
+// hanzo.id to hanzo.ai.
+var platformIssuers = []string{"https://hanzo.id", "https://hanzo.ai"}
+
+// trustedIssuers is every issuer a socket's token may name: the one configured and, when
+// that is the platform's, its other spelling, each matched exactly. An organization's own
+// issuer (https://hanzo.ai/<org>) is never the platform's.
+func trustedIssuers(configured string) []string {
+	if slices.Contains(platformIssuers, configured) {
+		return slices.Clone(platformIssuers)
+	}
+	return []string{configured}
 }
